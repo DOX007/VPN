@@ -1,0 +1,78 @@
+#cloud-config
+package_update: true
+packages:
+  - wireguard
+  - iptables
+  - curl
+  - jq
+
+write_files:
+  - path: /usr/local/sbin/setup-wireguard
+    owner: root:root
+    permissions: "0700"
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+      umask 077
+
+      SERVER_IFACE="$(ip -4 route show default | awk 'NR == 1 {print $5}')"
+      if [[ -z "$SERVER_IFACE" ]]; then
+        echo "Could not determine the default network interface." >&2
+        exit 1
+      fi
+
+      PUBLIC_IP="$(curl -fsS --max-time 5 \
+        -H 'Authorization: Bearer Oracle' \
+        http://169.254.169.254/opc/v2/vnics/ \
+        | jq -r '.[0].publicIp // empty' 2>/dev/null || true)"
+      if [[ -z "$PUBLIC_IP" ]]; then
+        PUBLIC_IP="$(curl -4fsS --max-time 10 https://api.ipify.org || true)"
+      fi
+      if [[ -z "$PUBLIC_IP" ]]; then
+        echo "Could not determine the VM public IPv4 address." >&2
+        exit 1
+      fi
+
+      install -d -m 0700 /etc/wireguard
+      SERVER_PRIVATE_KEY="$(wg genkey)"
+      SERVER_PUBLIC_KEY="$(printf '%s' "$SERVER_PRIVATE_KEY" | wg pubkey)"
+      CLIENT_PRIVATE_KEY="$(wg genkey)"
+      CLIENT_PUBLIC_KEY="$(printf '%s' "$CLIENT_PRIVATE_KEY" | wg pubkey)"
+
+      cat > /etc/wireguard/wg0.conf <<EOF
+      [Interface]
+      Address = 10.77.0.1/24
+      ListenPort = 51820
+      PrivateKey = ${SERVER_PRIVATE_KEY}
+      SaveConfig = false
+      PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o ${SERVER_IFACE} -j MASQUERADE
+      PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o ${SERVER_IFACE} -j MASQUERADE
+
+      [Peer]
+      PublicKey = ${CLIENT_PUBLIC_KEY}
+      AllowedIPs = 10.77.0.2/32
+      EOF
+      chmod 0600 /etc/wireguard/wg0.conf
+
+      cat > /root/wireguard-client.conf <<EOF
+      [Interface]
+      PrivateKey = ${CLIENT_PRIVATE_KEY}
+      Address = 10.77.0.2/32
+      DNS = 1.1.1.1
+
+      [Peer]
+      PublicKey = ${SERVER_PUBLIC_KEY}
+      Endpoint = ${PUBLIC_IP}:51820
+      AllowedIPs = 0.0.0.0/0
+      PersistentKeepalive = 25
+      EOF
+      chmod 0600 /root/wireguard-client.conf
+
+      cat > /etc/sysctl.d/99-wireguard-forward.conf <<EOF
+      net.ipv4.ip_forward = 1
+      EOF
+      sysctl --system
+      systemctl enable --now wg-quick@wg0
+
+runcmd:
+  - ["/usr/local/sbin/setup-wireguard"]
