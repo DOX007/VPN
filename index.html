@@ -3,86 +3,68 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gratis VPN med Cloudflare WARP</title>
+<title>Hemwebbläsare</title>
 <style>
   * { box-sizing: border-box; }
-  body { margin: 0; font-family: system-ui, sans-serif; background: #1e1e24; color: #eee; line-height: 1.6; }
-  main { max-width: 820px; margin: 0 auto; padding: 24px 16px 48px; }
-  h1 { margin-top: 0; }
-  h2 { margin-top: 32px; border-bottom: 1px solid #444; padding-bottom: 4px; }
-  a { color: #6cb6ff; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
-  .card { background: #2b2b33; border: 1px solid #444; border-radius: 8px; padding: 12px; text-align: center; }
-  .card a { display: block; font-weight: 600; text-decoration: none; }
-  code, pre { background: #25252c; border-radius: 4px; }
-  code { padding: 1px 5px; }
-  pre { padding: 10px; overflow-x: auto; }
-  #check { padding: 12px; border-radius: 8px; background: #2b2b33; border: 1px solid #444; }
-  #check.on { border-color: #3fb950; }
-  #check.off { border-color: #d29922; }
-  button { font-size: 14px; border-radius: 4px; border: 1px solid #444; background: #3a3a44; color: #eee; padding: 6px 12px; cursor: pointer; }
-  .note { color: #aaa; font-size: 13px; }
+  html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; background: #1e1e24; color: #eee; }
+  body { display: flex; flex-direction: column; }
+  form { display: flex; gap: 4px; padding: 4px; background: #2b2b33; }
+  button, input { font-size: 13px; border-radius: 4px; border: 1px solid #444; background: #3a3a44; color: #eee; padding: 5px 8px; }
+  button { cursor: pointer; }
+  #addr { flex: 1; min-width: 0; }
+  #status { padding: 2px 8px; font-size: 11px; color: #aaa; background: #25252c; min-height: 16px; }
+  iframe { flex: 1; width: 100%; border: 0; background: #fff; }
+  #help { padding: 16px; max-width: 640px; }
 </style>
 </head>
 <body>
-<main>
-  <h1>Gratis VPN med Cloudflare WARP</h1>
-  <p>Cloudflare WARP är en gratis klient som krypterar all trafik från din enhet via Cloudflares nätverk (WireGuard-baserat protokoll). Ingen server eller konto behövs.</p>
-
-  <h2>1. Installera appen</h2>
-  <div class="grid">
-    <div class="card"><a href="https://apps.apple.com/app/1-1-1-1-faster-internet/id1423538627">iOS</a></div>
-    <div class="card"><a href="https://play.google.com/store/apps/details?id=com.cloudflare.onedotonedotonedotone">Android</a></div>
-    <div class="card"><a href="https://1.1.1.1/Cloudflare_WARP.msi">Windows</a></div>
-    <div class="card"><a href="https://1.1.1.1/Cloudflare_WARP.zip">macOS</a></div>
-    <div class="card"><a href="https://pkg.cloudflareclient.com/">Linux</a></div>
-  </div>
-
-  <h2>2. Aktivera</h2>
-  <ol>
-    <li>Öppna appen och godkänn villkoren.</li>
-    <li>Slå på reglaget så att läget är <strong>WARP</strong>.</li>
-    <li>Kontrollera anslutningen nedan.</li>
-  </ol>
-
-  <div id="check" class="off">
-    <p id="result">Ej kontrollerad.</p>
-    <button id="run" type="button">Kontrollera anslutning</button>
-  </div>
-
-  <h2>Linux via terminal</h2>
-<pre>warp-cli registration new
-warp-cli connect
-warp-cli status</pre>
-
-  <h2>Begränsningar</h2>
-  <ul>
-    <li>WARP ändrar inte ditt land. Du kan inte välja serverplats, så det går inte att kringgå geoblockering.</li>
-    <li>Trafiken går via Cloudflare, som alltså ser den. Använd det inte för att dölja identitet.</li>
-    <li>Gratisversionen har ingen garanterad hastighet. WARP+ är en betaltjänst.</li>
-  </ul>
-  <p class="note">Kontrollen använder <code>https://www.cloudflare.com/cdn-cgi/trace</code> och skickar ingen data till något annat än Cloudflare.</p>
-</main>
+<form id="form">
+  <input id="addr" type="text" placeholder="Adress till din hemwebbläsare, t.ex. surf.dindomän.se" autocomplete="off" autofocus>
+  <button type="submit">Anslut</button>
+  <button type="button" id="tab" title="Öppna i egen flik">↗</button>
+</form>
+<div id="status">Ej ansluten</div>
+<div id="help">
+  <p>Ange adressen till din hemserver (Chromium bakom en Cloudflare Tunnel). Adressen sparas i den här webbläsaren.</p>
+  <p>Om sidan inte visas i ramen har tjänsten blockerat inbäddning. Använd då knappen ↗.</p>
+</div>
+<iframe id="view" title="Hemwebbläsare" hidden allow="clipboard-read; clipboard-write; fullscreen"></iframe>
 
 <script>
 (() => {
-  const box = document.getElementById('check');
-  const out = document.getElementById('result');
-  document.getElementById('run').onclick = async () => {
-    out.textContent = 'Kontrollerar ...';
+  const $ = id => document.getElementById(id);
+  const addr = $('addr'), view = $('view'), status = $('status'), help = $('help');
+  const KEY = 'homeBrowserHost';
+
+  function toUrl(input) {
+    input = input.trim();
+    if (!input) return null;
     try {
-      const res = await fetch('https://www.cloudflare.com/cdn-cgi/trace', { cache: 'no-store' });
-      const info = Object.fromEntries((await res.text()).trim().split('\n').map(l => l.split('=')));
-      const on = info.warp === 'on' || info.warp === 'plus';
-      box.className = on ? 'on' : 'off';
-      out.textContent = on
-        ? 'WARP är aktivt (läge: ' + info.warp + ').'
-        : 'WARP är inte aktivt. Starta appen och försök igen.';
+      const url = new URL(/^https:\/\//i.test(input) ? input : 'https://' + input.replace(/^http:\/\//i, ''));
+      return url.username || url.password ? null : url.href;
     } catch {
-      box.className = 'off';
-      out.textContent = 'Kunde inte nå Cloudflare.';
+      return null;
     }
+  }
+
+  function connect() {
+    const url = toUrl(addr.value);
+    if (!url) { status.textContent = 'Ogiltig adress.'; return; }
+    localStorage.setItem(KEY, addr.value.trim());
+    view.src = url;
+    view.hidden = false;
+    help.hidden = true;
+    status.textContent = 'Ansluten till ' + new URL(url).host;
+  }
+
+  $('form').addEventListener('submit', e => { e.preventDefault(); connect(); });
+  $('tab').onclick = () => {
+    const url = toUrl(addr.value);
+    if (url) window.open(url, '_blank', 'noopener');
   };
+
+  const saved = localStorage.getItem(KEY);
+  if (saved) addr.value = saved;
 })();
 </script>
 </body>
