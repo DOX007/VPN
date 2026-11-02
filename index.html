@@ -24,6 +24,7 @@
   <button type="button" id="reload" title="Ladda om">⟳</button>
   <input id="url" type="text" placeholder="Skriv webbadress eller sökord" autocomplete="off" autofocus>
   <button type="submit">Gå</button>
+  <button type="button" id="cfg" title="Proxyadress">⚙</button>
 </form>
 <div id="status">Redo</div>
 <iframe id="view" sandbox="allow-forms allow-scripts" title="Sida"></iframe>
@@ -33,7 +34,8 @@
   const $ = id => document.getElementById(id);
   const urlEl = $('url'), view = $('view'), status = $('status');
   const backBtn = $('back'), fwdBtn = $('fwd');
-  const defaultProxyEndpoint = 'https://proxy-35p.pages.dev';
+  const ENDPOINT_KEY = 'proxyEndpoint';
+  let proxyEndpoint = localStorage.getItem(ENDPOINT_KEY) || '';
   let history = [], pos = -1;
   let activeRequest, requestId = 0;
 
@@ -52,7 +54,7 @@
   }
 
   function proxyUrl(path, target) {
-    const endpoint = new URL(defaultProxyEndpoint);
+    const endpoint = new URL(proxyEndpoint);
     endpoint.pathname = path;
     if (target) endpoint.searchParams.set('url', target);
     return endpoint;
@@ -141,7 +143,7 @@
     } catch (err) {
       if (currentRequest !== requestId) return;
       const errorMessage = err.message === 'Failed to fetch'
-        ? 'Kunde inte nå proxyservern. Kontrollera att https://proxy-35p.pages.dev är tillgänglig och att Cloudflare Pages har slutfört senaste bygget.'
+        ? 'Kunde inte nå proxyservern ' + proxyEndpoint + '. Kontrollera adressen med knappen ⚙ och att den inte blockeras av nätet.'
         : err.message;
       view.srcdoc = '<body style="font-family:sans-serif;padding:2em"><h2>Kunde inte ladda sidan</h2><p>'
         + String(errorMessage).replace(/</g, '&lt;') + '</p></body>';
@@ -160,7 +162,27 @@
     load(url);
   }
 
-  $('form').addEventListener('submit', e => { e.preventDefault(); go(normalize(urlEl.value)); });
+  function setEndpoint() {
+    const value = prompt('Adress till din proxy (t.ex. https://namn.deno.dev):', proxyEndpoint);
+    if (value === null) return false;
+    try {
+      const u = new URL(value.trim());
+      if (u.protocol !== 'https:') throw new Error();
+      proxyEndpoint = u.origin;
+      localStorage.setItem(ENDPOINT_KEY, proxyEndpoint);
+      return true;
+    } catch {
+      status.textContent = 'Ogiltig proxyadress.';
+      return false;
+    }
+  }
+
+  $('cfg').onclick = setEndpoint;
+  $('form').addEventListener('submit', e => {
+    e.preventDefault();
+    if (!proxyEndpoint && !setEndpoint()) return;
+    go(normalize(urlEl.value));
+  });
   backBtn.onclick = () => { if (pos > 0) { pos--; go(history[pos], false); } };
   fwdBtn.onclick = () => { if (pos < history.length - 1) { pos++; go(history[pos], false); } };
   $('reload').onclick = () => { if (pos >= 0) load(history[pos]); };
