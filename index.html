@@ -3,68 +3,172 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hemwebbläsare</title>
+<title>Molnwebbläsare</title>
 <style>
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; background: #1e1e24; color: #eee; }
   body { display: flex; flex-direction: column; }
-  form { display: flex; gap: 4px; padding: 4px; background: #2b2b33; }
-  button, input { font-size: 13px; border-radius: 4px; border: 1px solid #444; background: #3a3a44; color: #eee; padding: 5px 8px; }
+  form { display: flex; gap: 3px; padding: 4px; background: #2b2b33; }
+  button, select, input { font-size: 12px; border-radius: 4px; border: 1px solid #444; background: #3a3a44; color: #eee; padding: 3px 6px; }
   button { cursor: pointer; }
-  #addr { flex: 1; min-width: 0; }
+  button:disabled { opacity: .4; cursor: default; }
+  #url { flex: 1; min-width: 0; }
   #status { padding: 2px 8px; font-size: 11px; color: #aaa; background: #25252c; min-height: 16px; }
   iframe { flex: 1; width: 100%; border: 0; background: #fff; }
-  #help { padding: 16px; max-width: 640px; }
 </style>
 </head>
 <body>
 <form id="form">
-  <input id="addr" type="text" placeholder="Adress till din hemwebbläsare, t.ex. surf.dindomän.se" autocomplete="off" autofocus>
-  <button type="submit">Anslut</button>
-  <button type="button" id="tab" title="Öppna i egen flik">↗</button>
+  <button type="button" id="back" disabled title="Bakåt">◀</button>
+  <button type="button" id="fwd" disabled title="Framåt">▶</button>
+  <button type="button" id="reload" title="Ladda om">⟳</button>
+  <input id="url" type="text" placeholder="Skriv webbadress eller sökord" autocomplete="off" autofocus>
+  <button type="submit">Gå</button>
 </form>
-<div id="status">Ej ansluten</div>
-<div id="help">
-  <p>Ange adressen till din hemserver (Chromium bakom en Cloudflare Tunnel). Adressen sparas i den här webbläsaren.</p>
-  <p>Om sidan inte visas i ramen har tjänsten blockerat inbäddning. Använd då knappen ↗.</p>
-</div>
-<iframe id="view" title="Hemwebbläsare" hidden allow="clipboard-read; clipboard-write; fullscreen"></iframe>
+<div id="status">Redo</div>
+<iframe id="view" sandbox="allow-forms allow-scripts" title="Sida"></iframe>
 
 <script>
 (() => {
   const $ = id => document.getElementById(id);
-  const addr = $('addr'), view = $('view'), status = $('status'), help = $('help');
-  const KEY = 'homeBrowserHost';
+  const urlEl = $('url'), view = $('view'), status = $('status');
+  const backBtn = $('back'), fwdBtn = $('fwd');
+  const defaultProxyEndpoint = 'https://proxy-35p.pages.dev';
+  let history = [], pos = -1;
+  let activeRequest, requestId = 0;
 
-  function toUrl(input) {
+  // Gör om inmatning till en giltig URL, annars sök via Google
+  function normalize(input) {
     input = input.trim();
     if (!input) return null;
+    if (/^https?:\/\//i.test(input)) return input;
+    if (/^[^\s]+\.[a-z]{2,}(\/.*)?$/i.test(input)) return 'https://' + input;
+    return 'https://www.google.com/search?hl=sv&q=' + encodeURIComponent(input);
+  }
+
+  function updateButtons() {
+    backBtn.disabled = pos <= 0;
+    fwdBtn.disabled = pos >= history.length - 1;
+  }
+
+  function proxyUrl(path, target) {
+    const endpoint = new URL(defaultProxyEndpoint);
+    endpoint.pathname = path;
+    if (target) endpoint.searchParams.set('url', target);
+    return endpoint;
+  }
+
+  async function fetchVia(url) {
+    if (activeRequest) activeRequest.abort();
+    activeRequest = new AbortController();
+    const response = await fetch(proxyUrl('/proxy', url), { signal: activeRequest.signal });
+    if (!response.ok) throw new Error('Proxyn svarade HTTP ' + response.status + ': ' + await response.text());
+    const html = await response.text();
+    if (!html.trim()) throw new Error('Proxyn returnerade en tom sida.');
+    return { html };
+  }
+
+  // Bilder och stilmallar hämtas via proxyn så att hotlink-skydd och blockeringar inte slår ut dem
+  function viaAsset(value, pageUrl) {
     try {
-      const url = new URL(/^https:\/\//i.test(input) ? input : 'https://' + input.replace(/^http:\/\//i, ''));
-      return url.username || url.password ? null : url.href;
+      const abs = new URL(value, pageUrl);
+      if (!/^https?:$/.test(abs.protocol)) return value;
+      return proxyUrl('/asset', abs.href).href;
     } catch {
-      return null;
+      return value;
     }
   }
 
-  function connect() {
-    const url = toUrl(addr.value);
-    if (!url) { status.textContent = 'Ogiltig adress.'; return; }
-    localStorage.setItem(KEY, addr.value.trim());
-    view.src = url;
-    view.hidden = false;
-    help.hidden = true;
-    status.textContent = 'Ansluten till ' + new URL(url).host;
+  function rewriteAssets(doc, pageUrl) {
+    doc.querySelectorAll('img[src], source[src], video[poster], input[type=image][src]').forEach(el => {
+      const attr = el.hasAttribute('src') ? 'src' : 'poster';
+      el.setAttribute(attr, viaAsset(el.getAttribute(attr), pageUrl));
+    });
+    doc.querySelectorAll('img[srcset], source[srcset]').forEach(el => {
+      const rewritten = el.getAttribute('srcset').split(',').map(part => {
+        const [src, ...rest] = part.trim().split(/\s+/);
+        return src ? [viaAsset(src, pageUrl), ...rest].join(' ') : '';
+      }).filter(Boolean).join(', ');
+      el.setAttribute('srcset', rewritten);
+    });
+    doc.querySelectorAll('link[rel~=stylesheet][href]').forEach(el => {
+      el.setAttribute('href', viaAsset(el.getAttribute('href'), pageUrl));
+    });
+    doc.querySelectorAll('[style*="url("]').forEach(el => {
+      el.setAttribute('style', el.getAttribute('style').replace(/url\(\s*(["']?)([^"')]+)\1\s*\)/gi,
+        (m, q, v) => /^data:/i.test(v.trim()) ? m : `url("${viaAsset(v.trim(), pageUrl)}")`));
+    });
+    doc.querySelectorAll('style').forEach(el => {
+      el.textContent = el.textContent.replace(/url\(\s*(["']?)([^"')]+)\1\s*\)/gi,
+        (m, q, v) => /^data:/i.test(v.trim()) ? m : `url("${viaAsset(v.trim(), pageUrl)}")`);
+    });
   }
 
-  $('form').addEventListener('submit', e => { e.preventDefault(); connect(); });
-  $('tab').onclick = () => {
-    const url = toUrl(addr.value);
-    if (url) window.open(url, '_blank', 'noopener');
-  };
+  async function load(url) {
+    const currentRequest = ++requestId;
+    urlEl.value = url;
+    status.textContent = 'Hämtar via proxyn: ' + url + ' ...';
+    try {
+      const result = await fetchVia(url);
+      if (currentRequest !== requestId) return;
+      const { html } = result;
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      // <base> får relativa resurser att hämtas från originalsidan
+      const base = doc.createElement('base');
+      base.href = url;
+      doc.head.prepend(base);
+      rewriteAssets(doc, url);
+      // Länkar skickas upp till föräldern så att de går via proxyn
+      const script = doc.createElement('script');
+      script.textContent = `
+        document.addEventListener('click', e => {
+          const a = e.target.closest && e.target.closest('a[href]');
+          if (!a || a.href.startsWith('javascript:')) return;
+          e.preventDefault();
+          parent.postMessage({ proxyNav: a.href }, '*');
+        }, true);
+        document.addEventListener('submit', e => {
+          const f = e.target;
+          if ((f.method || 'get').toLowerCase() !== 'get') return;
+          e.preventDefault();
+          const u = new URL(f.action || location.href);
+          new FormData(f).forEach((v, k) => { if (typeof v === 'string') u.searchParams.set(k, v); });
+          parent.postMessage({ proxyNav: u.href }, '*');
+        }, true);`;
+      doc.body.append(script);
+      view.srcdoc = '<!DOCTYPE html>' + doc.documentElement.outerHTML;
+      status.textContent = url;
+    } catch (err) {
+      if (currentRequest !== requestId) return;
+      const errorMessage = err.message === 'Failed to fetch'
+        ? 'Kunde inte nå proxyservern. Kontrollera att https://proxy-35p.pages.dev är tillgänglig och att Cloudflare Pages har slutfört senaste bygget.'
+        : err.message;
+      view.srcdoc = '<body style="font-family:sans-serif;padding:2em"><h2>Kunde inte ladda sidan</h2><p>'
+        + String(errorMessage).replace(/</g, '&lt;') + '</p></body>';
+      status.textContent = 'Fel: ' + errorMessage;
+    }
+  }
 
-  const saved = localStorage.getItem(KEY);
-  if (saved) addr.value = saved;
+  function go(url, push = true) {
+    if (!url) return;
+    if (push) {
+      history = history.slice(0, pos + 1);
+      history.push(url);
+      pos = history.length - 1;
+    }
+    updateButtons();
+    load(url);
+  }
+
+  $('form').addEventListener('submit', e => { e.preventDefault(); go(normalize(urlEl.value)); });
+  backBtn.onclick = () => { if (pos > 0) { pos--; go(history[pos], false); } };
+  fwdBtn.onclick = () => { if (pos < history.length - 1) { pos++; go(history[pos], false); } };
+  $('reload').onclick = () => { if (pos >= 0) load(history[pos]); };
+
+  window.addEventListener('message', e => {
+    if (e.source !== view.contentWindow || !e.data || typeof e.data.proxyNav !== 'string') return;
+    if (/^https?:\/\//i.test(e.data.proxyNav)) go(e.data.proxyNav);
+  });
 })();
 </script>
 </body>
