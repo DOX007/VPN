@@ -1,6 +1,7 @@
 const MAX_HTML_BYTES = 3 * 1024 * 1024;
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
+const ALLOWED_HOST = 'temu.com';
 function corsHeaders() {
   const headers = new Headers({
     'Vary': 'Origin',
@@ -32,6 +33,9 @@ function validateTarget(value) {
   }
 
   const host = url.hostname.toLowerCase().replace(/\.$/, '');
+  if (host !== ALLOWED_HOST && !host.endsWith(`.${ALLOWED_HOST}`)) {
+    throw new Error('Testproxyn tillåter endast temu.com och dess underdomäner.');
+  }
   if (!host || host === 'localhost' || /\.(localhost|local|internal|test)$/.test(host) ||
       host.includes(':')) {
     throw new Error('Lokala värdnamn och IPv6-adresser tillåts inte.');
